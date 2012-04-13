@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-# version:  20120412
+# version:  20120413
 # finds files in directory and MD5sums and SHA1sums them, being smart enough to
 # check against previous backup for hard links
 #
@@ -29,12 +29,12 @@ use warnings;
 use Cwd;
 
 # default config file
-$CONFIG = "/etc/dirvish/master.conf";
+my $CONFIG = "/etc/dirvish/master.conf";
 
-$MD5SUM = "/usr/bin/md5sum";
-$SHA1SUM = "/usr/bin/sha1sum";
-$BZIP2 = "/bin/bzip2";
-$FIND = "/usr/bin/find";
+my $MD5SUM = "/usr/bin/md5sum";
+my $SHA1SUM = "/usr/bin/sha1sum";
+my $BZIP2 = "/bin/bzip2";
+my $FIND = "/usr/bin/find";
 
 
 
@@ -47,6 +47,7 @@ $FIND = "/usr/bin/find";
 # By default we generate SHA1 and MD5 checksums
 
 # get command line args
+my %args;
 foreach my $arg (@ARGV) {
 	if ( $arg =~ /^--([^\-=]+)$/ ) {
 		# true value
@@ -57,83 +58,88 @@ foreach my $arg (@ARGV) {
 	}
 }
 # check for "stupid users"
-if ( $args{nosha1} and $args{nomd5} ) {
+if ( $args{'nosha1'} and $args{'nomd5'} ) {
 	die "This is completely pointless - I give up!\n";
 }
 
 
 # read the master config
-open CONF, $CONFIG or die "FATAL: can't read \"$CONFIG\": $!\n";
-while ( defined ( $line = <CONF> ) ) {
-	chomp $line;
-	if ( $line =~ /^bank:$/ ) {
-		$bank = <CONF>;
-		chomp $bank;
-		$bank =~ s/^\s+//;
-		last;
-	}
+my %banks;
+if ( -f $CONFIG ) {
+	readconfig ( $CONFIG, \%banks );
 }
-close CONF;
-
 # read the config file and get the bank parameter
-if ( $args{config} ) {
-	open CONF, $args{config} or die "FATAL: can't read \"$args{config}\": $!\n";
-	while ( defined ( $line = <CONF> ) ) {
+if ( $args{'config'} ) {
+	readconfig ( $args{'config'}, \%banks );
+}
+if ( keys %banks == 0 ) { die "FATAL: no bank found in config \"$CONFIG\"\n"; }
+
+
+
+# go through each vault in each bank
+foreach my $bank (keys %banks) {
+	opendir LSV, $bank or die "FATAL: can't list vaults: $!\n";
+	while ( defined ( my $vault = readdir LSV ) ) {
+		if ( ! -d "$bank/$vault" or $vault =~ /^\./ ) { next; }
+		# check each valut for days
+		opendir LSD, "$bank/$vault"
+			or die "FATAL: can't list vault \"$vault\": $!\n";
+		my @days;
+		while ( defined ( my $day = readdir LSD ) ) {
+			if ( ! -d "$bank/$vault/$day" or $day !~ /^\d{8}$/ ) { next; }
+			push @days, $day;
+		}
+		closedir LSD;
+		my $previousday;
+		foreach my $day (sort @days) {
+			# skip if existing checksums
+			if ( -f "$bank/$vault/$day/MD5SUMS.bz2"
+				and -f "$bank/$vault/$day/SHA1SUMS.bz2" ) {
+				if ( $args{'debug'} ) { print "$bank/$vault/$day\n\texisting checksums\n"; }
+			} else {
+				# check this directory
+				if ( $previousday ) {
+					process_dir ( "$bank/$vault/$day",
+							"$bank/$vault/$previousday" );
+				} else {
+					process_dir ( "$bank/$vault/$day" );
+				}
+			}
+			# setup for next time round
+			$previousday = $day;
+		}
+	}
+	closedir LSV;
+}
+
+
+
+
+
+
+
+
+
+
+sub readconfig {
+	my ( $config, $banks ) = @_;
+	open CONF, $config or die "FATAL: can't read \"$config\": $!\n";
+	my $bankfound = 0;
+	while ( defined ( my $line = <CONF> ) ) {
 		chomp $line;
-		if ( $line =~ /^bank:$/ ) {
-			$bank = <CONF>;
-			chomp $bank;
-			$bank =~ s/^\s+//;
-			last;
+		if ( $line =~ s/^bank:\s*// ) {
+			$bankfound = 1;
+			chomp $line;
+			if ( $line ne '' and -d $line ) { $$banks{$line} = 1; }
+		} elsif ( $bankfound and $line =~ s/^\s+// ) {
+			chomp $line;
+			if ( $line ne '' and -d $line ) { $$banks{$line} = 1; }
+		} else {
+			$bankfound = 0;
 		}
 	}
 	close CONF;
-	if ( ! $bank ) { die "FATAL: no bank found in config \"$args{config}\"\n"; }
-} else {
-	if ( ! $bank ) { die "FATAL: no bank found in config \"$CONFIG\"\n"; }
 }
-
-
-
-# go through each vault
-opendir LSV, $bank or die "FATAL: can't list vaults: $!\n";
-while ( defined ( $vault = readdir LSV ) ) {
-	if ( ! -d "$bank/$vault" or $vault =~ /^\./ ) { next; }
-	# check each valut for days
-	opendir LSD, "$bank/$vault"
-			or die "FATAL: can't list vault \"$vault\": $!\n";
-	undef @days;
-	while ( defined ( $day = readdir LSD ) ) {
-		if ( ! -d "$bank/$vault/$day" or $day !~ /^\d{8}$/ ) { next; }
-		push @days, $day;
-	}
-	closedir LSD;
-	undef $previousday;
-	foreach $day (sort @days) {
-		# skip if existing checksums
-		if ( -f "$bank/$vault/$day/MD5SUMS.bz2"
-			and -f "$bank/$vault/$day/SHA1SUMS.bz2" ) {
-			if ( $args{debug} ) { print "$bank/$vault/$day\n\texisting checksums\n"; }
-		} else {
-			# check this directory
-			if ( $previousday ) {
-				process_dir ( "$bank/$vault/$day",
-						"$bank/$vault/$previousday" );
-			} else {
-				process_dir ( "$bank/$vault/$day" );
-			}
-		}
-		# setup for next time round
-		$previousday = $day;
-	}
-}
-closedir LSV;
-
-
-
-
-
-
 
 
 
@@ -164,7 +170,7 @@ sub process_dir {
 					last;
 				} else {
 					# cache inodes by file to save time later
-					$inodesbyfile{$2} = $inode;
+					$inodesbyfile{$2} = $1;
 				}
 			}
 		}
@@ -172,7 +178,7 @@ sub process_dir {
 	}
 	# get inodes for previous files based on SHA1SUMS
 	if ( $previousdir and -f "$previousdir/SHA1SUMS.bz2"
-		and ! -f "$dir/SHA1SUMS.bz2" and ! $args{nosha1} ) {
+		and ! -f "$dir/SHA1SUMS.bz2" and ! $args{'nosha1'} ) {
 		print "\tgetting checksums/inodes for previous SHA1SUMS....\n";
 		open SHA1, "$BZIP2 -d <\"$previousdir/SHA1SUMS.bz2\"|"
 			or die "FATAL: can't process \"$BZIP2 -d <\"$previousdir/SHA1SUMS.bz2\"\": $!\n";
@@ -198,7 +204,7 @@ sub process_dir {
 		close SHA1;
 	}
 	# sha1sum tree
-	if ( ! -f "$dir/SHA1SUMS.bz2" and ! $args{nosha1} ) {
+	if ( ! -f "$dir/SHA1SUMS.bz2" and ! $args{'nosha1'} ) {
 		print "\tgenerating checksums....\n";
 		my $pwd = getcwd;
 		if ( ! chdir "$dir/tree" ) {
@@ -214,6 +220,7 @@ sub process_dir {
 		while ( defined ( my $line = <FND> ) ) {
 			chomp $line;
 			++$filecount;
+			my $inode;
 			if ( exists $inodesbyfilenew{$line} ) {
 				$inode = $inodesbyfilenew{$line};
 			} else {
@@ -230,7 +237,7 @@ sub process_dir {
 				$file =~ s/"/\\"/g;
 				$file =~ s/`/\\`/g;
 				$file =~ s/\$/\\\$/g;
-				$sha1 = `$SHA1SUM "$file"`;
+				my $sha1 = `$SHA1SUM "$file"`;
 				chomp $sha1;
 				if ( $sha1 eq "" ) { print "ERROR:  \"$file\"\n"; }
 				print SHA1 "$sha1\n";
@@ -252,7 +259,7 @@ sub process_dir {
 	undef %checksums;
 	# get inodes for previous files based on MD5SUMS
 	if ( $previousdir and -f "$previousdir/MD5SUMS.bz2"
-		and ! -f "$dir/MD5SUMS.bz2" and ! $args{nomd5} ) {
+		and ! -f "$dir/MD5SUMS.bz2" and ! $args{'nomd5'} ) {
 		print "\tgetting checksums/inodes for previous MD5SUMS....\n";
 		open MD5, "$BZIP2 -d <\"$previousdir/MD5SUMS.bz2\"|"
 			or die "FATAL: can't process \"$BZIP2 -d <\"$previousdir/MD5SUMS.bz2\"\": $!\n";
@@ -278,7 +285,7 @@ sub process_dir {
 		close MD5;
 	}
 	# md5sum tree
-	if ( ! -f "$dir/MD5SUMS.bz2" and ! $args{nomd5} ) {
+	if ( ! -f "$dir/MD5SUMS.bz2" and ! $args{'nomd5'} ) {
 		print "\tgenerating checksums....\n";
 		my $pwd = getcwd;
 		if ( ! chdir "$dir/tree" ) {
@@ -294,6 +301,7 @@ sub process_dir {
 		while ( defined ( my $line = <FND> ) ) {
 			chomp $line;
 			++$filecount;
+			my $inode;
 			if ( exists $inodesbyfilenew{$line} ) {
 				$inode = $inodesbyfilenew{$line};
 			} else {
@@ -310,7 +318,7 @@ sub process_dir {
 				$file =~ s/`/\\`/g;
 				$file =~ s/"/\\"/g;
 				$file =~ s/\$/\\\$/g;
-				$md5 = `$MD5SUM "$file"`;
+				my $md5 = `$MD5SUM "$file"`;
 				chomp $md5;
 				if ( $md5 eq "" ) { print "ERROR:  \"$file\"\n"; }
 				print MD5 "$md5\n";
