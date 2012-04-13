@@ -25,6 +25,8 @@ use warnings;
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #
 #
+# See http://www.pitt-pladdy.com/blog/_20120412-224240_0100_dirvish-checksum_available_again/
+
 
 use Cwd;
 
@@ -33,6 +35,7 @@ my $CONFIG = "/etc/dirvish/master.conf";
 
 my $MD5SUM = "/usr/bin/md5sum";
 my $SHA1SUM = "/usr/bin/sha1sum";
+my $GZIP = "/bin/gzip";
 my $BZIP2 = "/bin/bzip2";
 my $FIND = "/usr/bin/find";
 
@@ -151,32 +154,98 @@ sub process_dir {
 	my $previousdir = shift;
 	# hashes for storing inodes / checksums
 	my %checksums;
-	my %inodesbyfile;
+	my %inodesbyfileprev;
 	my %inodesbyfilenew;
 	# announce where we are working
 	print "$dir\n";
-	# read inode cache if available
-	if ( $previousdir and -f "$previousdir/inodes.bz2" ) {
-		open INO, '-|', "$BZIP2 -d <\"$previousdir/inodes.bz2\""
-			or die "FATAL: can't process \"$BZIP2 -d <\"$previousdir/inodes.bz2\"\": $!\n";
+	# read inodeinfo from indexes if available
+	if ( $previousdir and -f "$previousdir/index.gz" and -f "$previousdir/summary" ) {
+		# read in the summary if available
+		my $tree;
+		open SMRY, '<', "$previousdir/summary"
+			or die "FATAL: can't read \"$previousdir/summary\": $!\n";
+		while ( defined ( my $line = <SMRY> ) ) {
+			if ( $line =~ /^tree:\s+([^\s].+)$/ ) {
+				$tree = $1;
+				last;
+			}
+		}
+		close SMRY;
+		# read in index
+		open IDX, '-|', "$GZIP -d <\"$previousdir/index.gz\""
+			or die "FATAL: can't process \"$GZIP -d <\"$previousdir/index.gz\"\": $!\n";
+		print "\tReading Previous index....\n";
 		my $count = 0;
-		while ( defined ( my $line = <INO> ) ) {
+		while ( defined ( my $line = <IDX> ) ) {
 			chomp $line;
-			if ( $line =~ /^(\d+)\s+([^\s].+)$/ ) {
-				if ( $count++ % 1000 == 0 and (stat "$previousdir/tree/$2")[1] != $1 ) {
+			if ( $line =~ /^(\d+)\s+\d+\s+[drwxs\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
+				my ( $inode, $file ) = ( $1, $3 );
+				if ( substr ( $file, 0, length $tree ) eq $tree ) {
+					$file = substr $file, length $tree;
+					$file =~ s/^\/*/.\//;
+				} else {
+					next;
+				}
+				$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
+				$file =~ s/\\ / /g;		# convert spaces
+				$file =~ s/\\(\d{3})/chr $1/eg;		# convert special characters TODO this doesn't seem to convert well
+				if ( $count++ % 1000 == 0 and (stat "$previousdir/tree/$file")[1] != $inode ) {
 					# validation of this inode failed - can't depend on this data
-					warn "Validation of \"$previousdir/inodes.bz2\" failed on \"$2\"\n";
-					undef %inodesbyfile;
+					warn "Validation of \"$previousdir/index.gz\" failed on \"$file\"\n";
+					undef %inodesbyfileprev;
 					last;
 				} else {
 					# cache inodes by file to save time later
-					$inodesbyfile{$2} = $1;
+					$inodesbyfileprev{$file} = $inode;
 				}
 			}
 		}
-		close SHA1;
+		close IDX;
 	}
-	# get inodes for previous files based on SHA1SUMS
+	if ( $dir and -f "$dir/index.gz" ) {
+		# read in the summary if available
+		my $tree;
+		open SMRY, '<', "$dir/summary"
+			or die "FATAL: can't read \"$dir/summary\": $!\n";
+		while ( defined ( my $line = <SMRY> ) ) {
+			if ( $line =~ /^tree:\s+([^\s].+)$/ ) {
+				$tree = $1;
+				last;
+			}
+		}
+		close SMRY;
+		# read in index
+		open IDX, '-|', "$GZIP -d <\"$dir/index.gz\""
+			or die "FATAL: can't process \"$GZIP -d <\"$dir/index.gz\"\": $!\n";
+		print "\tReading New index....\n";
+		my $count = 0;
+		while ( defined ( my $line = <IDX> ) ) {
+			chomp $line;
+			if ( $line =~ /^(\d+)\s+\d+\s+[drwxs\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
+				my ( $inode, $file ) = ( $1, $3 );
+				if ( substr ( $file, 0, length $tree ) eq $tree ) {
+					$file = substr $file, length $tree;
+					$file =~ s/^\/*/.\//;
+				} else {
+					next;
+				}
+				$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
+				$file =~ s/\\ / /g;		# convert spaces
+				$file =~ s/\\(\d{3})/chr $1/eg;		# convert special characters TODO this doesn't seem to convert well
+				if ( $count++ % 1000 == 0 and (stat "$dir/tree/$file")[1] != $inode ) {
+					# validation of this inode failed - can't depend on this data
+					warn "Validation of \"$dir/index.gz\" failed on \"$file\"\n";
+					undef %inodesbyfilenew;
+					last;
+				} else {
+					# cache inodes by file to save time later
+					$inodesbyfilenew{$file} = $inode;
+				}
+			}
+		}
+		close IDX;
+	}
+	# get checksums for previous files based on SHA1SUMS
 	if ( $previousdir and -f "$previousdir/SHA1SUMS.bz2"
 		and ! -f "$dir/SHA1SUMS.bz2" and ! $args{'nosha1'} ) {
 		print "\tgetting checksums/inodes for previous SHA1SUMS....\n";
@@ -187,18 +256,18 @@ sub process_dir {
 			if ( $line =~ /^(\w+)\s+([^\s].+)$/ ) {
 				my $inode;
 				# use cached inodes if available
-				if ( $inodesbyfile{$2} ) {
-					$inode = $inodesbyfile{$2};
+				if ( exists $inodesbyfileprev{$2} ) {
+					$inode = $inodesbyfileprev{$2};
 				} else {
 					$inode = (stat "$previousdir/tree/$2")[1];
+					# cache inodes by file to save time later
+					$inodesbyfilenew{$2} = $inode;
 				}
 				if ( ! $inode ) {
 					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$2\"\n";
 					next;
 				}
 				$checksums{$inode} = $1;
-				# cache inodes by file to save time later
-				$inodesbyfile{$2} = $inode;
 			}
 		}
 		close SHA1;
@@ -257,7 +326,7 @@ sub process_dir {
 	}
 	# clear for next round
 	undef %checksums;
-	# get inodes for previous files based on MD5SUMS
+	# get checksums for previous files based on MD5SUMS
 	if ( $previousdir and -f "$previousdir/MD5SUMS.bz2"
 		and ! -f "$dir/MD5SUMS.bz2" and ! $args{'nomd5'} ) {
 		print "\tgetting checksums/inodes for previous MD5SUMS....\n";
@@ -268,18 +337,18 @@ sub process_dir {
 			if ( $line =~ /^(\w+)\s+([^\s].+)$/ ) {
 				my $inode;
 				# use cached inodes if available
-				if ( $inodesbyfile{$2} ) {
-					$inode = $inodesbyfile{$2};
+				if ( exists $inodesbyfileprev{$2} ) {
+					$inode = $inodesbyfileprev{$2};
 				} else {
 					$inode = (stat "$previousdir/tree/$2")[1];
+					# cache inodes by file to save time later
+					$inodesbyfileprev{$2} = $inode;
 				}
 				if ( ! $inode ) {
 					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$2\"\n";
 					next;
 				}
 				$checksums{$inode} = $1;
-				# cache inodes by file to save time later
-				$inodesbyfile{$2} = $inode;
 			}
 		}
 		close MD5;
@@ -336,13 +405,6 @@ sub process_dir {
 			printf "\t\thard linked %.1f %%\n", 100 * $fileduplicate / $filecount;
 		}
 	}
-	# store inode cache
-	open INO, '|-', "bzip2 >$dir/inodes.bz2.TMP"
-		or die "FATAL: can't write \"bzip2 >$dir/inodes.bz2.TMP\": $!\n";
-	foreach my $file (keys %inodesbyfilenew) {
-		print INO "$inodesbyfilenew{$file}  $file\n";
-	}
-	close INO;
 	# replace the inodes
 	rename "$dir/inodes.bz2.TMP", "$dir/inodes.bz2";
 }
