@@ -165,7 +165,8 @@ sub process_dir {
 		open SMRY, '<', "$previousdir/summary"
 			or die "FATAL: can't read \"$previousdir/summary\": $!\n";
 		while ( defined ( my $line = <SMRY> ) ) {
-			if ( $line =~ /^tree:\s+([^\s].+)$/ ) {
+			chomp $line;
+			if ( $line =~ /^tree:\s+([^\s].*)$/ ) {
 				$tree = $1;
 				last;
 			}
@@ -189,6 +190,7 @@ sub process_dir {
 				$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
 				$file =~ s/\\ / /g;		# convert spaces
 				$file =~ s/\\(\d{3})/chr $1/eg;		# convert special characters TODO this doesn't seem to convert well
+				if ( ! -e "$previousdir/tree/$file" ) { next; }
 				if ( $count++ % 1000 == 0 and (stat "$previousdir/tree/$file")[1] != $inode ) {
 					# validation of this inode failed - can't depend on this data
 					warn "Validation of \"$previousdir/index.gz\" failed on \"$file\"\n";
@@ -208,7 +210,8 @@ sub process_dir {
 		open SMRY, '<', "$dir/summary"
 			or die "FATAL: can't read \"$dir/summary\": $!\n";
 		while ( defined ( my $line = <SMRY> ) ) {
-			if ( $line =~ /^tree:\s+([^\s].+)$/ ) {
+			chomp $line;
+			if ( $line =~ /^tree:\s+([^\s].*)$/ ) {
 				$tree = $1;
 				last;
 			}
@@ -232,6 +235,7 @@ sub process_dir {
 				$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
 				$file =~ s/\\ / /g;		# convert spaces
 				$file =~ s/\\(\d{3})/chr $1/eg;		# convert special characters TODO this doesn't seem to convert well
+				if ( ! -e "$previousdir/tree/$file" ) { next; }
 				if ( $count++ % 1000 == 0 and (stat "$dir/tree/$file")[1] != $inode ) {
 					# validation of this inode failed - can't depend on this data
 					warn "Validation of \"$dir/index.gz\" failed on \"$file\"\n";
