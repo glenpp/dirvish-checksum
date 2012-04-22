@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-# version:  20120413
+# version:  20120422
 # finds files in directory and MD5sums and SHA1sums them, being smart enough to
 # check against previous backup for hard links
 #
@@ -179,7 +179,7 @@ sub process_dir {
 		my $count = 0;
 		while ( defined ( my $line = <IDX> ) ) {
 			chomp $line;
-			if ( $line =~ /^(\d+)\s+\d+\s+[drwxs\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
+			if ( $line =~ /^(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
 				my ( $inode, $file ) = ( $1, $3 );
 				if ( substr ( $file, 0, length $tree ) eq $tree ) {
 					$file = substr $file, length $tree;
@@ -189,9 +189,12 @@ sub process_dir {
 				}
 				$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
 				$file =~ s/\\ / /g;		# convert spaces
-				$file =~ s/\\(\d{3})/chr $1/eg;		# convert special characters TODO this doesn't seem to convert well
-				if ( ! -e "$previousdir/tree/$file" ) { next; }
-				if ( $count++ % 1000 == 0 and (stat "$previousdir/tree/$file")[1] != $inode ) {
+				$file =~ s/\\"/"/g;		# convert quotes
+				$file =~ s/\\\\/\\/g;		# convert backslashes
+				$file =~ s/\\(\d{3})/pack('C',oct($1))/eg;
+#				if ( ! -e "$previousdir/tree/$file" ) { next; }
+				++$count;
+				if ( $count % 2**int(log($count)) == 0 and (stat "$previousdir/tree/$file")[1] != $inode ) {
 					# validation of this inode failed - can't depend on this data
 					warn "Validation of \"$previousdir/index.gz\" failed on \"$file\"\n";
 					undef %inodesbyfileprev;
@@ -224,7 +227,7 @@ sub process_dir {
 		my $count = 0;
 		while ( defined ( my $line = <IDX> ) ) {
 			chomp $line;
-			if ( $line =~ /^(\d+)\s+\d+\s+[drwxs\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
+			if ( $line =~ /^(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
 				my ( $inode, $file ) = ( $1, $3 );
 				if ( substr ( $file, 0, length $tree ) eq $tree ) {
 					$file = substr $file, length $tree;
@@ -234,9 +237,12 @@ sub process_dir {
 				}
 				$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
 				$file =~ s/\\ / /g;		# convert spaces
-				$file =~ s/\\(\d{3})/chr $1/eg;		# convert special characters TODO this doesn't seem to convert well
-				if ( ! -e "$previousdir/tree/$file" ) { next; }
-				if ( $count++ % 1000 == 0 and (stat "$dir/tree/$file")[1] != $inode ) {
+				$file =~ s/\\"/"/g;		# convert quotes
+				$file =~ s/\\\\/\\/g;		# convert backslashes
+				$file =~ s/\\(\d{3})/pack('C',oct($1))/eg;
+#				if ( ! -e "$previousdir/tree/$file" ) { next; }
+				++$count;
+				if ( $count % 2**int(log($count)) == 0 and (stat "$dir/tree/$file")[1] != $inode ) {
 					# validation of this inode failed - can't depend on this data
 					warn "Validation of \"$dir/index.gz\" failed on \"$file\"\n";
 					undef %inodesbyfilenew;
@@ -259,19 +265,21 @@ sub process_dir {
 			chomp $line;
 			if ( $line =~ /^(\w+)\s+([^\s].+)$/ ) {
 				my $inode;
+				my ( $checksum, $path ) = ( $1, $2 );
+				$path =~ s/^\//.\//;
 				# use cached inodes if available
-				if ( exists $inodesbyfileprev{$2} ) {
-					$inode = $inodesbyfileprev{$2};
+				if ( exists $inodesbyfileprev{$path} ) {
+					$inode = $inodesbyfileprev{$path};
 				} else {
-					$inode = (stat "$previousdir/tree/$2")[1];
+					$inode = (stat "$previousdir/tree/$path")[1];
 					# cache inodes by file to save time later
-					$inodesbyfilenew{$2} = $inode;
+					$inodesbyfileprev{$path} = $inode;
 				}
 				if ( ! $inode ) {
-					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$2\"\n";
+					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$path\"\n";
 					next;
 				}
-				$checksums{$inode} = $1;
+				$checksums{$inode} = $checksum;
 			}
 		}
 		close SHA1;
@@ -284,14 +292,15 @@ sub process_dir {
 			print STDERR "\tWARNING: can't change directory to \"$dir/tree\": $!\n";
 			return 1;
 		}
-		open FND, "$FIND -type f |"
-				or die "FATAL: can't run find: $!\n";
+#		open FND, "$FIND -type f |"
+#				or die "FATAL: can't run find: $!\n";
 		open SHA1, '|-', "bzip2 >$dir/SHA1SUMS.bz2.TMP"
 				or die "FATAL: can't write \"bzip2 >$dir/SHA1SUMS.bz2.TMP\": $!\n";
 		my $filecount = 0;
 		my $fileduplicate = 0;
-		while ( defined ( my $line = <FND> ) ) {
-			chomp $line;
+#		while ( defined ( my $line = <FND> ) ) {
+		foreach my $line (keys %inodesbyfilenew) {
+#			chomp $line;
 			++$filecount;
 			my $inode;
 			if ( exists $inodesbyfilenew{$line} ) {
@@ -316,7 +325,7 @@ sub process_dir {
 				print SHA1 "$sha1\n";
 			}
 		}
-		close FND;
+#		close FND;
 		close SHA1;
 		chdir $pwd;
 		# replace the SHA1SUMS
@@ -340,19 +349,21 @@ sub process_dir {
 			chomp $line;
 			if ( $line =~ /^(\w+)\s+([^\s].+)$/ ) {
 				my $inode;
+				my ( $checksum, $path ) = ( $1, $2 );
+				$path =~ s/^\//.\//;
 				# use cached inodes if available
-				if ( exists $inodesbyfileprev{$2} ) {
-					$inode = $inodesbyfileprev{$2};
+				if ( exists $inodesbyfileprev{$path} ) {
+					$inode = $inodesbyfileprev{$path};
 				} else {
-					$inode = (stat "$previousdir/tree/$2")[1];
+					$inode = (stat "$previousdir/tree/$path")[1];
 					# cache inodes by file to save time later
-					$inodesbyfileprev{$2} = $inode;
+					$inodesbyfileprev{$path} = $inode;
 				}
 				if ( ! $inode ) {
-					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$2\"\n";
+					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$path\"\n";
 					next;
 				}
-				$checksums{$inode} = $1;
+				$checksums{$inode} = $checksum;
 			}
 		}
 		close MD5;
@@ -365,14 +376,15 @@ sub process_dir {
 			print STDERR "\tWARNING: can't change directory to \"$dir/tree\": $!\n";
 			return 1;
 		}
-		open FND, "$FIND -type f |"
-				or die "FATAL: can't run find: $!\n";
+#		open FND, "$FIND -type f |"
+#				or die "FATAL: can't run find: $!\n";
 		open MD5, '|-', "bzip2 >$dir/MD5SUMS.bz2.TMP"
 				or die "FATAL: can't write \"bzip2 >$dir/MD5SUMS.bz2.TMP\": $!\n";
 		my $filecount = 0;
 		my $fileduplicate = 0;
-		while ( defined ( my $line = <FND> ) ) {
-			chomp $line;
+#		while ( defined ( my $line = <FND> ) ) {
+		foreach my $line (keys %inodesbyfilenew) {
+#			chomp $line;
 			++$filecount;
 			my $inode;
 			if ( exists $inodesbyfilenew{$line} ) {
@@ -397,7 +409,7 @@ sub process_dir {
 				print MD5 "$md5\n";
 			}
 		}
-		close FND;
+#		close FND;
 		close MD5;
 		chdir $pwd;
 		# replace the MD5SUMS
