@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-# version:  20120422
+# version:  20120616
 # finds files in directory and MD5sums and SHA1sums them, being smart enough to
 # check against previous backup for hard links
 #
@@ -179,7 +179,7 @@ sub process_dir {
 		my $count = 0;
 		while ( defined ( my $line = <IDX> ) ) {
 			chomp $line;
-			if ( $line =~ /^(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
+			if ( $line =~ /^\s*(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
 				my ( $inode, $file ) = ( $1, $3 );
 				if ( substr ( $file, 0, length $tree ) eq $tree ) {
 					$file = substr $file, length $tree;
@@ -227,7 +227,7 @@ sub process_dir {
 		my $count = 0;
 		while ( defined ( my $line = <IDX> ) ) {
 			chomp $line;
-			if ( $line =~ /^(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
+			if ( $line =~ /^\s*(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
 				my ( $inode, $file ) = ( $1, $3 );
 				if ( substr ( $file, 0, length $tree ) eq $tree ) {
 					$file = substr $file, length $tree;
