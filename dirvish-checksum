@@ -172,6 +172,9 @@ sub process_dir {
 			}
 		}
 		close SMRY;
+		if ( ! defined $tree ) {
+			die "FATAL: can't find \$tree in \"$previousdir/summary\"\n";
+		}
 		# read in index
 		open IDX, '-|', "$GZIP -d <\"$previousdir/index.gz\""
 			or die "FATAL: can't process \"$GZIP -d <\"$previousdir/index.gz\"\": $!\n";
@@ -194,7 +197,7 @@ sub process_dir {
 				$file =~ s/\\(\d{3})/pack('C',oct($1))/eg;
 #				if ( ! -e "$previousdir/tree/$file" ) { next; }
 				++$count;
-				if ( $count % 2**int(log($count)) == 0 and (stat "$previousdir/tree/$file")[1] != $inode ) {
+				if ( $count % 2**int(log($count)) == 0 and (stat "$previousdir/tree/$file")[1] != $inode ) {	# (stat "$previousdir/tree/$file")[1] can be uninitialised
 					# validation of this inode failed - can't depend on this data
 					warn "Validation of \"$previousdir/index.gz\" failed on \"$file\"\n";
 					undef %inodesbyfileprev;
