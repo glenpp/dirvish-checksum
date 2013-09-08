@@ -25,7 +25,7 @@ use warnings;
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #
 #
-# See http://www.pitt-pladdy.com/blog/_20120412-224240_0100_dirvish-checksum_available_again/
+# See https://www.pitt-pladdy.com/blog/_20120412-224240_0100_dirvish-checksum_available_again/
 
 
 use Cwd;
@@ -39,11 +39,19 @@ my $GZIP = "/bin/gzip";
 my $BZIP2 = "/bin/bzip2";
 my $FIND = "/usr/bin/find";
 
+my %CHECKS = (
+	'MD5SUMS' => '/usr/bin/md5sum',
+	'SHA1SUMS' => '/usr/bin/sha1sum',
+#	'SHA256SUMS' => '/usr/bin/sha256sum',
+	'SHA512SUMS' => '/usr/bin/sha512sum',
+);
+
 
 
 # arguments accepted:
-#	--nosha1	disables SHA1SUMS
-#	--nomd5		disables MD5SUMS
+#	--nosha1sums	disables SHA1SUMS
+#	--nomd5sums		disables MD5SUMS
+#	--no......		disables ........
 #	--config=<path>		alternate config file to use
 #	--debug		prints extra info for debugging
 #
@@ -96,16 +104,18 @@ foreach my $bank (keys %banks) {
 		my $previousday;
 		foreach my $day (sort @days) {
 			# skip if existing checksums
-			if ( -f "$bank/$vault/$day/MD5SUMS.bz2"
-				and -f "$bank/$vault/$day/SHA1SUMS.bz2" ) {
-				if ( $args{'debug'} ) { print "$bank/$vault/$day\n\texisting checksums\n"; }
-			} else {
-				# check this directory
-				if ( $previousday ) {
-					process_dir ( "$bank/$vault/$day",
-							"$bank/$vault/$previousday" );
+			my $process = 0;
+			foreach (keys %CHECKS) {
+				if ( ! -f "$bank/$vault/$day/$_.bz2" ) {
+					# check this directory
+					if ( $previousday ) {
+						process_dir ( "$bank/$vault/$day",
+								"$bank/$vault/$previousday" );
+					} else {
+						process_dir ( "$bank/$vault/$day" );
+					}
 				} else {
-					process_dir ( "$bank/$vault/$day" );
+					if ( $args{'debug'} ) { print "$bank/$vault/$day\n\texisting $_\n"; }
 				}
 			}
 			# setup for next time round
@@ -149,11 +159,11 @@ sub readconfig {
 
 # generate checksums for specified directory (getting from previous if
 # hard linked)
+# takes 2 args: dir to check, previous generation dir
 sub process_dir {
 	my $dir = shift;
 	my $previousdir = shift;
 	# hashes for storing inodes / checksums
-	my %checksums;
 	my %inodesbyfileprev;
 	my %inodesbyfilenew;
 	# announce where we are working
@@ -199,7 +209,7 @@ sub process_dir {
 				++$count;
 				if ( $count % 2**int(log($count)) == 0 and (stat "$previousdir/tree/$file")[1] != $inode ) {	# (stat "$previousdir/tree/$file")[1] can be uninitialised
 					# validation of this inode failed - can't depend on this data
-					warn "Validation of \"$previousdir/index.gz\" failed on \"$file\"\n";
+					warn "\t!!! Validation of \"$previousdir/index.gz\" failed on \"$file\"\n";
 					undef %inodesbyfileprev;
 					last;
 				} else {
@@ -247,8 +257,9 @@ sub process_dir {
 				++$count;
 				if ( $count % 2**int(log($count)) == 0 and (stat "$dir/tree/$file")[1] != $inode ) {
 					# validation of this inode failed - can't depend on this data
-					warn "Validation of \"$dir/index.gz\" failed on \"$file\"\n";
+					warn "\t!!! Validation of \"$dir/index.gz\" failed on \"$file\"\n";
 					undef %inodesbyfilenew;
+					$count = -1;	# show we have a problem
 					last;
 				} else {
 					# cache inodes by file to save time later
@@ -257,39 +268,74 @@ sub process_dir {
 			}
 		}
 		close IDX;
-	}
-	# get checksums for previous files based on SHA1SUMS
-	if ( $previousdir and -f "$previousdir/SHA1SUMS.bz2"
-		and ! -f "$dir/SHA1SUMS.bz2" and ! $args{'nosha1'} ) {
-		print "\tgetting checksums/inodes for previous SHA1SUMS....\n";
-		open SHA1, "$BZIP2 -d <\"$previousdir/SHA1SUMS.bz2\"|"
-			or die "FATAL: can't process \"$BZIP2 -d <\"$previousdir/SHA1SUMS.bz2\"\": $!\n";
-		while ( defined ( my $line = <SHA1> ) ) {
-			chomp $line;
-			if ( $line =~ /^(\w+)\s+([^\s].+)$/ ) {
-				my $inode;
-				my ( $checksum, $path ) = ( $1, $2 );
-				$path =~ s/^\//.\//;
-				# use cached inodes if available
-				if ( exists $inodesbyfileprev{$path} ) {
-					$inode = $inodesbyfileprev{$path};
-				} else {
-					$inode = (stat "$previousdir/tree/$path")[1];
-					# cache inodes by file to save time later
-					$inodesbyfileprev{$path} = $inode;
+		if ( $count < 0 ) {
+			# we can't use existing inode list and have to read them all again
+			# read in index
+			open IDX, '-|', "$GZIP -d <\"$dir/index.gz\""
+				or die "FATAL: can't process \"$GZIP -d <\"$dir/index.gz\"\": $!\n";
+			print "\tRe-reading New index to check inodes....\n";
+			while ( defined ( my $line = <IDX> ) ) {
+				chomp $line;
+				if ( $line =~ /^\s*(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+[^\s]+\s+[^\s]+\s+\d+\s+\w+\s+\d+\s+(\d+:)?\d+\s+([^\s].+)$/ ) {
+					my ( $inode, $file ) = ( $1, $3 );
+					if ( substr ( $file, 0, length $tree ) eq $tree ) {
+						$file = substr $file, length $tree;
+						$file =~ s/^\/*/.\//;
+					} else {
+						next;
+					}
+					$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
+					$file =~ s/\\ / /g;		# convert spaces
+					$file =~ s/\\"/"/g;		# convert quotes
+					$file =~ s/\\\\/\\/g;		# convert backslashes
+					$file =~ s/\\(\d{3})/pack('C',oct($1))/eg;
+					my @stat = stat ( "$dir/tree/$file");
+					if ( ! @stat ) {
+						die "FATAL - can't stat \"$dir/tree/$file\"\n";
+					}
+					$inodesbyfilenew{$file} = $stat[1];
 				}
-				if ( ! $inode ) {
-					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$path\"\n";
-					next;
-				}
-				$checksums{$inode} = $checksum;
 			}
+			close IDX;
 		}
-		close SHA1;
 	}
-	# sha1sum tree
-	if ( ! -f "$dir/SHA1SUMS.bz2" and ! $args{'nosha1'} ) {
-		print "\tgenerating checksums....\n";
+
+
+	# process files based on each check
+	while ( my ( $checksumfile, $check ) = each ( %CHECKS ) ) {
+		# skip if file exists or this typie is disabled
+		if ( -f "$dir/$checksumfile.bz2" or $args{'no'.lc($checksumfile)} ) { next; }
+		# get checksums for previous files based on SHA1SUMS
+		my %checksums;
+		if ( $previousdir and -f "$previousdir/$checksumfile.bz2" ) {
+			print "\tgetting checksums/inodes for previous $checksumfile....\n";
+			open CHECKSUM, "$BZIP2 -d <\"$previousdir/$checksumfile.bz2\"|"
+				or die "FATAL: can't process \"$BZIP2 -d <\"$previousdir/$checksumfile.bz2\"\": $!\n";
+			while ( defined ( my $line = <CHECKSUM> ) ) {
+				chomp $line;
+				if ( $line =~ /^(\w+)\s+([^\s].+)$/ ) {
+					my $inode;
+					my ( $checksum, $path ) = ( $1, $2 );
+					$path =~ s/^\//.\//;
+					# use cached inodes if available
+					if ( exists $inodesbyfileprev{$path} ) {
+						$inode = $inodesbyfileprev{$path};
+					} else {
+						$inode = (stat "$previousdir/tree/$path")[1];
+						# cache inodes by file to save time later
+						$inodesbyfileprev{$path} = $inode;
+					}
+					if ( ! $inode ) {
+						print STDERR "\tWARNING: no inode for \"$previousdir/tree/$path\"\n";
+						next;
+					}
+					$checksums{$inode} = $checksum;
+				}
+			}
+			close CHECKSUM;
+		}
+		# sha1sum tree
+		print "\tgenerating $checksumfile....\n";
 		my $pwd = getcwd;
 		if ( ! chdir "$dir/tree" ) {
 			print STDERR "\tWARNING: can't change directory to \"$dir/tree\": $!\n";
@@ -297,8 +343,8 @@ sub process_dir {
 		}
 #		open FND, "$FIND -type f |"
 #				or die "FATAL: can't run find: $!\n";
-		open SHA1, '|-', "bzip2 >$dir/SHA1SUMS.bz2.TMP"
-				or die "FATAL: can't write \"bzip2 >$dir/SHA1SUMS.bz2.TMP\": $!\n";
+		open CHECKSUM, '|-', "bzip2 >$dir/$checksumfile.bz2.TMP"
+				or die "FATAL: can't write \"bzip2 >$dir/$checksumfile.bz2.TMP\": $!\n";
 		my $filecount = 0;
 		my $fileduplicate = 0;
 #		while ( defined ( my $line = <FND> ) ) {
@@ -313,119 +359,35 @@ sub process_dir {
 				$inodesbyfilenew{$line} = $inode;
 			}
 			if ( $checksums{$inode} ) {
-				print SHA1 "$checksums{$inode}  $line\n";
+				print CHECKSUM "$checksums{$inode}  $line\n";
 				++$fileduplicate
 			} else {
-				# sha1sum file
+				# checksum file
 				my $file = $line;
+				# shell escaping
 				$file =~ s/\\/\\\\/g;
 				$file =~ s/"/\\"/g;
 				$file =~ s/`/\\`/g;
 				$file =~ s/\$/\\\$/g;
-				my $sha1 = `$SHA1SUM "$file"`;
-				chomp $sha1;
-				if ( $sha1 eq "" ) { print "ERROR:  \"$file\"\n"; }
-				print SHA1 "$sha1\n";
+				my $sum = `$check "$file"`;
+				chomp $sum;
+				if ( $sum eq "" ) { print "ERROR:  \"$file\"\n"; }
+				print CHECKSUM "$sum\n";
 			}
 		}
 #		close FND;
-		close SHA1;
+		close CHECKSUM;
 		chdir $pwd;
-		# replace the SHA1SUMS
-		rename "$dir/SHA1SUMS.bz2.TMP", "$dir/SHA1SUMS.bz2";
+		# rename to final file
+		rename "$dir/$checksumfile.bz2.TMP", "$dir/$checksumfile.bz2";
 		# stats
 		if ( $filecount == 0 ) {
 			print "\t\tWARNING:  No files found\n";
 		} else {
 			printf "\t\thard linked %.1f %%\n", 100 * $fileduplicate / $filecount;
 		}
+
 	}
-	# clear for next round
-	undef %checksums;
-	# get checksums for previous files based on MD5SUMS
-	if ( $previousdir and -f "$previousdir/MD5SUMS.bz2"
-		and ! -f "$dir/MD5SUMS.bz2" and ! $args{'nomd5'} ) {
-		print "\tgetting checksums/inodes for previous MD5SUMS....\n";
-		open MD5, "$BZIP2 -d <\"$previousdir/MD5SUMS.bz2\"|"
-			or die "FATAL: can't process \"$BZIP2 -d <\"$previousdir/MD5SUMS.bz2\"\": $!\n";
-		while ( defined ( my $line = <MD5> ) ) {
-			chomp $line;
-			if ( $line =~ /^(\w+)\s+([^\s].+)$/ ) {
-				my $inode;
-				my ( $checksum, $path ) = ( $1, $2 );
-				$path =~ s/^\//.\//;
-				# use cached inodes if available
-				if ( exists $inodesbyfileprev{$path} ) {
-					$inode = $inodesbyfileprev{$path};
-				} else {
-					$inode = (stat "$previousdir/tree/$path")[1];
-					# cache inodes by file to save time later
-					$inodesbyfileprev{$path} = $inode;
-				}
-				if ( ! $inode ) {
-					print STDERR "\tWARNING: no inode for \"$previousdir/tree/$path\"\n";
-					next;
-				}
-				$checksums{$inode} = $checksum;
-			}
-		}
-		close MD5;
-	}
-	# md5sum tree
-	if ( ! -f "$dir/MD5SUMS.bz2" and ! $args{'nomd5'} ) {
-		print "\tgenerating checksums....\n";
-		my $pwd = getcwd;
-		if ( ! chdir "$dir/tree" ) {
-			print STDERR "\tWARNING: can't change directory to \"$dir/tree\": $!\n";
-			return 1;
-		}
-#		open FND, "$FIND -type f |"
-#				or die "FATAL: can't run find: $!\n";
-		open MD5, '|-', "bzip2 >$dir/MD5SUMS.bz2.TMP"
-				or die "FATAL: can't write \"bzip2 >$dir/MD5SUMS.bz2.TMP\": $!\n";
-		my $filecount = 0;
-		my $fileduplicate = 0;
-#		while ( defined ( my $line = <FND> ) ) {
-		foreach my $line (keys %inodesbyfilenew) {
-#			chomp $line;
-			++$filecount;
-			my $inode;
-			if ( exists $inodesbyfilenew{$line} ) {
-				$inode = $inodesbyfilenew{$line};
-			} else {
-				$inode = (stat $line)[1];
-				$inodesbyfilenew{$line} = $inode;
-			}
-			if ( $checksums{$inode} ) {
-				print MD5 "$checksums{$inode}  $line\n";
-				++$fileduplicate
-			} else {
-				# md5sum file
-				my $file = $line;
-				$file =~ s/\\/\\\\/g;
-				$file =~ s/`/\\`/g;
-				$file =~ s/"/\\"/g;
-				$file =~ s/\$/\\\$/g;
-				my $md5 = `$MD5SUM "$file"`;
-				chomp $md5;
-				if ( $md5 eq "" ) { print "ERROR:  \"$file\"\n"; }
-				print MD5 "$md5\n";
-			}
-		}
-#		close FND;
-		close MD5;
-		chdir $pwd;
-		# replace the MD5SUMS
-		rename "$dir/MD5SUMS.bz2.TMP", "$dir/MD5SUMS.bz2";
-		# stats
-		if ( $filecount == 0 ) {
-			print "\t\tWARNING:  No files found\n";
-		} else {
-			printf "\t\thard linked %.1f %%\n", 100 * $fileduplicate / $filecount;
-		}
-	}
-	# replace the inodes
-	rename "$dir/inodes.bz2.TMP", "$dir/inodes.bz2";
 }
 
 
