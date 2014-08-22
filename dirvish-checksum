@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-# version:  20130908
+# version:  20140822
 # finds files in directory and MD5sums and SHA1sums them, being smart enough to
 # check against previous backup for hard links
 #
@@ -72,7 +72,7 @@ foreach my $arg (@ARGV) {
 	}
 }
 # check for "stupid users"
-if ( $args{'nosha1'} and $args{'nomd5'} ) {
+if (  $args{'nosha512ums'} and $args{'nosha1sums'} and $args{'nomd5sums'} ) {
 	die "This is completely pointless - I give up!\n";
 }
 
@@ -169,14 +169,14 @@ sub process_dir {
 	# announce where we are working
 	print "$dir\n";
 	# evaluate inode cache to use previous inodes
-	if ( $previousdir eq $inodespathnew ) {
+	if ( ! $previousdir ) {
+		undef %inodesbyfileprev;
+		$inodespathprev = '';
+	} elsif ( $previousdir eq $inodespathnew ) {
 		# use new as previous
 		print "\tUsing Previous Cache....\n";
 		%inodesbyfileprev = %inodesbyfilenew;
 		$inodespathprev = $inodespathnew;
-	} elsif ( $previousdir eq $inodespathprev ) {
-		# keep existing prev cache
-		print "\tKeeping Previous Cache....\n";
 	} else {
 		# we have no exisging inode data to go on
 		undef %inodesbyfileprev;
@@ -361,15 +361,11 @@ sub process_dir {
 			print STDERR "\tWARNING: can't change directory to \"$dir/tree\": $!\n";
 			return 1;
 		}
-#		open FND, "$FIND -type f |"
-#				or die "FATAL: can't run find: $!\n";
 		open CHECKSUM, '|-', "bzip2 >$dir/$checksumfile.bz2.TMP"
 				or die "FATAL: can't write \"bzip2 >$dir/$checksumfile.bz2.TMP\": $!\n";
 		my $filecount = 0;
 		my $fileduplicate = 0;
-#		while ( defined ( my $line = <FND> ) ) {
 		foreach my $line (sort keys %inodesbyfilenew) {
-#			chomp $line;
 			++$filecount;
 			my $inode;
 			if ( exists $inodesbyfilenew{$line} ) {
@@ -380,7 +376,7 @@ sub process_dir {
 			}
 			if ( $checksums{$inode} ) {
 				print CHECKSUM "$checksums{$inode}  $line\n";
-				++$fileduplicate
+				++$fileduplicate;
 			} else {
 				# checksum file
 				my $file = $line;
@@ -395,7 +391,6 @@ sub process_dir {
 				print CHECKSUM "$sum\n";
 			}
 		}
-#		close FND;
 		close CHECKSUM;
 		chdir $pwd;
 		# rename to final file
