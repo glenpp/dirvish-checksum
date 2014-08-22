@@ -8,7 +8,7 @@ use warnings;
 #
 #
 #
-# Copyright (C) 2008-2013  Glen Pitt-Pladdy
+# Copyright (C) 2008-2014  Glen Pitt-Pladdy
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -35,13 +35,12 @@ my $CONFIG = "/etc/dirvish/master.conf";
 
 my $GZIP = "/bin/gzip";
 my $BZIP2 = "/bin/bzip2";
-#my $FIND = "/usr/bin/find";
 
-my %CHECKS = (
-	'MD5SUMS' => '/usr/bin/md5sum',
-	'SHA1SUMS' => '/usr/bin/sha1sum',
-#	'SHA256SUMS' => '/usr/bin/sha256sum',
-	'SHA512SUMS' => '/usr/bin/sha512sum',
+my @CHECKS = (
+	'MD5SUMS',
+	'SHA1SUMS',
+#	'SHA256SUMS',
+	'SHA512SUMS',
 );
 
 # chaches
@@ -76,6 +75,16 @@ if (  $args{'nosha512ums'} and $args{'nosha1sums'} and $args{'nomd5sums'} ) {
 	die "This is completely pointless - I give up!\n";
 }
 
+# get relevant algorithms in
+foreach my $alg (@CHECKS) {
+	if ( exists ( $args{'no'.lc($alg)} ) ) { next; }
+	if ( $alg =~ /^SHA\d+SUMS$/ ) {
+		use Digest::SHA;
+	} elsif ( $alg eq 'MD5SUMS' ) {
+		use Digest::MD5;
+	}
+}
+
 
 # read the master config
 my %banks;
@@ -108,7 +117,7 @@ foreach my $bank (keys %banks) {
 		foreach my $day (sort @days) {
 			# skip if existing checksums
 			my $process = 0;
-			foreach (keys %CHECKS) {
+			foreach (@CHECKS) {
 				if ( ! -f "$bank/$vault/$day/$_.bz2" ) {
 					# check this directory
 					if ( $previousday ) {
@@ -322,7 +331,7 @@ sub process_dir {
 		close IDX;
 	}
 	# process files based on each check
-	while ( my ( $checksumfile, $check ) = each ( %CHECKS ) ) {
+	foreach my $checksumfile (@CHECKS) {
 		# skip if file exists or this typie is disabled
 		if ( -f "$dir/$checksumfile.bz2" or $args{'no'.lc($checksumfile)} ) { next; }
 		# get checksums for previous files
@@ -379,16 +388,27 @@ sub process_dir {
 				++$fileduplicate;
 			} else {
 				# checksum file
-				my $file = $line;
-				# shell escaping
-				$file =~ s/\\/\\\\/g;
-				$file =~ s/"/\\"/g;
-				$file =~ s/`/\\`/g;
-				$file =~ s/\$/\\\$/g;
-				my $sum = `$check "$file"`;
-				chomp $sum;
-				if ( $sum eq "" ) { print "ERROR:  \"$file\"\n"; }
-				print CHECKSUM "$sum\n";
+				my $sum;
+				if ( $checksumfile eq 'SHA512SUMS' ) {
+					my $sha = Digest::SHA->new ( 'sha512' );
+					$sha->addfile ( $line );
+					$sum = $sha->hexdigest;
+				} elsif ( $checksumfile eq 'SHA1SUMS' ) {
+					my $sha = Digest::SHA->new ( 'sha1' );
+					$sha->addfile ( $line );
+					$sum = $sha->hexdigest;
+				} elsif ( $checksumfile eq 'MD5SUMS' ) {
+					my $md5 = Digest::MD5->new;
+					$md5->addfile ( $line );
+					$sum = $md5->hexdigest;
+				} else {
+					die "$0: FATAL - unhandled checksum type \"$checksumfile\"\n";
+				}
+				if ( defined ( $sum ) ) {
+				print CHECKSUM "$sum  $line\n";
+				} else {
+					print "ERROR:  \"$line\"\n";
+				}
 			}
 		}
 		close CHECKSUM;
