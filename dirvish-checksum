@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-# version:  20140822
+# version:  20140824
 # finds files in directory and MD5sums and SHA1sums them, being smart enough to
 # check against previous backup for hard links
 #
@@ -74,6 +74,25 @@ foreach my $arg (@ARGV) {
 if (  $args{'nosha512ums'} and $args{'nosha1sums'} and $args{'nomd5sums'} ) {
 	die "This is completely pointless - I give up!\n";
 }
+# check for unknown args
+foreach my $arg (keys %args) {
+	if ( $arg =~ /^no(.+)$/ ) {
+		my $sum = uc $1;
+		my $found = 0;
+		foreach (@CHECKS) {
+			if ( $sum eq $_ ) {
+				$found = 1;
+				last;
+			}
+		}
+		if ( ! $found ) { usage (); }
+	}
+}
+# check for usual calls for help
+if ( $args{help} or $args{h} or $args{'?'} ) { usage (); }
+sub usage {
+	die "Usage: $0 [--no(checksumtype)] ...\n";
+}
 
 # get relevant algorithms in
 foreach my $alg (@CHECKS) {
@@ -118,16 +137,21 @@ foreach my $bank (keys %banks) {
 			# skip if existing checksums
 			my $process = 0;
 			foreach (@CHECKS) {
-				if ( ! -f "$bank/$vault/$day/$_.bz2" ) {
-					# check this directory
-					if ( $previousday ) {
-						process_dir ( "$bank/$vault/$day",
-								"$bank/$vault/$previousday" );
-					} else {
-						process_dir ( "$bank/$vault/$day" );
-					}
-				} else {
+				# skip if file exists or this typie is disabled
+				if ( -f "$bank/$vault/$day/$_.bz2" ) {
 					if ( $args{'debug'} ) { print "$bank/$vault/$day\n\texisting $_\n"; }
+					next;
+				}
+				if ( $args{'no'.lc($_)} ) {
+					if ( $args{'debug'} ) { print "$bank/$vault/$day\n\tdisabled (--no".lc($_).") $_\n"; }
+					next;
+				}
+				# check this directory
+				if ( $previousday ) {
+					process_dir ( "$bank/$vault/$day",
+							"$bank/$vault/$previousday" );
+				} else {
+					process_dir ( "$bank/$vault/$day" );
 				}
 			}
 			# setup for next time round
