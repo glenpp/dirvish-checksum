@@ -369,7 +369,7 @@ sub process_dir {
 		if ( $logparserun == 0 ) {
 			unshift @parselines, $line;
 			# look for starting condition
-			if ( $parselines[0] eq 'receiving incremental file list'
+			if ( $parselines[0] =~ /^(sending|receiving) incremental file list$/
 				and $parselines[1] eq ''
 				and $parselines[2] =~ /^ACTION: .*rsync/
 				and $parselines[3] eq '' ) {
