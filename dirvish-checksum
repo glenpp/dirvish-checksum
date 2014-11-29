@@ -274,8 +274,11 @@ sub process_dir {
 	if ( ! $dir or ! -d $dir ) {
 		die "$0: FATAL - Directory \"$dir\" to build checksums for doesn't exist\n";
 	}
-	if ( ! -f "$dir/index.gz" or ! -f "$dir/index.gz" ) {
-		die "$0: FATAL - Required files \"$dir/index.gz\" and/or \"$dir/index.gz\" missing\n";
+	if ( ! -f "$dir/index.gz" ) {
+		die "$0: FATAL - Required files \"$dir/index.gz\" missing\n";
+	}
+	if ( ! -f "$dir/log.gz" ) {
+		die "$0: FATAL - Required files \"$dir/log.gz\" missing\n";
 	}
 	# read in the summary if available
 	my $tree;
@@ -325,7 +328,7 @@ sub process_dir {
 	}
 	close IDX;
 	if ( $count < 0 ) {
-		# we can't use existing inode list and have to read them all again
+		# we can't use existing inode list and have to read them all again (-1 indicates a problem / mismatch)
 		# read in index
 		open IDX, '-|', "$GZIP -d <\"$dir/index.gz\""
 			or die "FATAL: can't process \"$GZIP -d <\"$dir/index.gz\"\": $!\n";
@@ -354,9 +357,44 @@ sub process_dir {
 		}
 		close IDX;
 	}
+	# parse log - this tells us files we definitely know have changed
+	my %changedfiles;
+	open my $dirvishlog, '-|', "$GZIP -d <\"$dir/log.gz\""
+			or die "FATAL: can't process \"$GZIP -d <\"$dir/log.gz\"\": $!\n";
+	print "\tReading log file....\n";
+	my @parselines;
+	my $logparserun = 0;
+	while ( defined ( my $line = <$dirvishlog> ) ) {
+		chomp $line;
+		if ( $logparserun == 0 ) {
+			unshift @parselines, $line;
+			# look for starting condition
+			if ( $parselines[0] eq 'receiving incremental file list'
+				and $parselines[1] eq ''
+				and $parselines[2] =~ /^ACTION: .*rsync/
+				and $parselines[3] eq '' ) {
+				# found starting condition
+				$logparserun = 1;
+			}
+		} else {
+			# we are up and running
+			if ( $line eq '' ) { last; }	# blank line at end of file list
+			# we assume lines are either files or deletes
+			if ( -f "$dir/tree/$line" ) {
+				# good one - add to the list
+				$changedfiles{"./$line"} = 1;
+			} elsif ( $line =~ /^deleting / ) {
+				# assume this is a safe delete line
+			} else {
+				# probably something wrong
+				die "FATAL: Changed file in \"$dir/log.gz\" missing: \"$dir/tree/$line\"\n";
+			}
+		}
+	}
+	close $dirvishlog;
 	# process files based on each check
 	foreach my $checksumfile (@CHECKS) {
-		# skip if file exists or this typie is disabled
+		# skip if file exists or this type is disabled
 		if ( -f "$dir/$checksumfile.bz2" or $args{'no'.lc($checksumfile)} ) { next; }
 		# get checksums for previous files
 		my %checksums;
@@ -407,7 +445,7 @@ sub process_dir {
 				$inode = (stat $line)[1];
 				$inodesbyfilenew{$line} = $inode;
 			}
-			if ( $checksums{$inode} ) {
+			if ( $checksums{$inode} and ! $changedfiles{$line} ) {	# double check: inode and changed list
 				print CHECKSUM "$checksums{$inode}  $line\n";
 				++$fileduplicate;
 			} else {
@@ -429,7 +467,7 @@ sub process_dir {
 					die "$0: FATAL - unhandled checksum type \"$checksumfile\"\n";
 				}
 				if ( defined ( $sum ) ) {
-				print CHECKSUM "$sum  $line\n";
+					print CHECKSUM "$sum  $line\n";
 				} else {
 					print "ERROR:  \"$line\"\n";
 				}
