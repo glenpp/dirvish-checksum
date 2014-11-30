@@ -380,7 +380,7 @@ sub process_dir {
 			# we are up and running
 			if ( $line eq '' ) { last; }	# blank line at end of file list
 			# we assume lines are either files or deletes
-			if ( -f "$dir/tree/$line" ) {
+			if ( -e "$dir/tree/$line" ) {
 				# good one - add to the list
 				$changedfiles{"./$line"} = 1;
 			} elsif ( $line =~ /^deleting / ) {
