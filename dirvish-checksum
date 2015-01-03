@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-# version:  20150101
+# version:  20150102
 # finds files in directory and MD5sums and SHA1sums them, being smart enough to
 # check against previous backup for hard links
 #
@@ -317,7 +317,10 @@ sub process_dir {
 	}
 	# read in index
 	print "\tReading New index....\n";
+print "**** old: ".join("\n\t",@{$filesbyinodeprev{159880}})."\n\n";
 	read_index ( \%inodesbyfilenew, \%filesbyinodenew, $dir );
+print "**** new: ".join("\n\t",@{$filesbyinodenew{159880}})."\n\n";
+print "**** old: ".join("\n\t",@{$filesbyinodeprev{159880}})."\n\n";
 	# parse log - this tells us files we definitely know have changed
 	my %changedfiles;
 	open my $dirvishlog, '-|', "$GZIP -d <\"$dir/log.gz\""
@@ -390,6 +393,11 @@ sub process_dir {
 					# use cached inodes if available
 					if ( exists $inodesbyfileprev{$path} ) {
 						$inode = $inodesbyfileprev{$path};
+if ( $path =~ /usr\/lib\/php\/blog-dev\/\.hg\/store\/.*phaseroots/ ) {
+print "$path :: fromChecksum : $inode\n";
+print "\t".join("\n\t",@{$filesbyinodeprev{$inode}})."\n\n";
+print "\t".join("\n\t",@{$filesbyinodenew{$inode}})."\n\n";
+}
 					} else {
 # TODO this should not occur - we should have got them either way by now TODO
 die "$0: FATAL - this silly situation can't occur\n";
@@ -430,7 +438,11 @@ die "$0: FATAL - this silly situation can't occur\n";
 			}
 			if ( $checksums{$inode} and ! $changedfiles{$line} ) {	# double check: inode and changed list
 				# use the existing cached data
+if ( $line =~ /usr\/lib\/php\/blog-dev\/\.hg\/store\/.*phaseroots/ ) {
+print "$line :: existing : $inode : $checksums{$inode}\n";
+}
 # TODO maybe we should check size and date for extra safety TODO
+# TODO yes - since inodes mya not change with btrfs snapshots, and generations may be skipped/deleted, logs & inodes don't have the whole story TODO
 				print CHECKSUM "$checksums{$inode}  $line\n";
 				++$fileduplicate;
 #if ( $line =~ /etc\/apache2\/blocklist\.conf/ ) { print "existing: ./$line\n\t$inode :: $checksums{$inode}\n"; }
@@ -458,6 +470,9 @@ die "$0: FATAL - this silly situation can't occur\n";
 				} else {
 					print "ERROR:  \"$line\"\n";
 				}
+if ( $line =~ /usr\/lib\/php\/blog-dev\/\.hg\/store\/.*phaseroots/ ) {
+print "$line :: new : ......... : $sum\n";
+}
 			}
 		}
 		close CHECKSUM;
