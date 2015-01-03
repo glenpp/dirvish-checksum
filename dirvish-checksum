@@ -93,7 +93,7 @@ foreach my $arg (keys %args) {
 # check for usual calls for help
 if ( $args{help} or $args{h} or $args{'?'} ) { usage (); }
 sub usage {
-	die "Usage: $0 [--no(checksumtype)] ...\n";
+	die "Usage: $0 [--no(checksumtype)] ... [--confg=configfile] [--debug]\n";
 }
 
 # get relevant algorithms in
@@ -290,6 +290,7 @@ sub process_dir {
 					my ( $checksum, $path ) = ( $1, $2 );
 					$path =~ s/^\//.\//;
 					# use cached inodes if available
+# TODO clear this all up
 					if ( exists $filestatsprev{$path}->{inode} ) {
 						$inode = $filestatsprev{$path}->{inode};
 #if ( $path =~ /usr\/lib\/php\/blog-dev\/\.hg\/store\/.*phaseroots/ ) {
@@ -329,6 +330,7 @@ die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
 		foreach my $line (sort keys %filestatsnew) {
 			++$filecount;
 			my $inode;
+# TODO clear this all up
 			if ( exists $filestatsnew{$line} ) {
 				$inode = $filestatsnew{$line}->{inode};
 			} else {
@@ -341,6 +343,7 @@ die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
 			if ( $checksums{$inode} and ! $changedfiles{$line}
 					and $filestatsnew{$line}->{inode} == $filestatsprev{$line}->{inode}
 					and $filestatsnew{$line}->{user} eq $filestatsprev{$line}->{user}
+					and $filestatsnew{$line}->{permissions} eq $filestatsprev{$line}->{permissions}
 					and $filestatsnew{$line}->{group} eq $filestatsprev{$line}->{group}
 					and $filestatsnew{$line}->{size} == $filestatsprev{$line}->{size}
 					and $filestatsnew{$line}->{date} eq $filestatsprev{$line}->{date}
@@ -412,9 +415,9 @@ die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
 
 sub readconfig {
 	my ( $config, $banks ) = @_;
-	open CONF, $config or die "FATAL: can't read \"$config\": $!\n";
+	open my $conf, $config or die "FATAL: can't read \"$config\": $!\n";
 	my $bankfound = 0;
-	while ( defined ( my $line = <CONF> ) ) {
+	while ( defined ( my $line = <$conf> ) ) {
 		chomp $line;
 		if ( $line =~ s/^bank:\s*// ) {
 			$bankfound = 1;
@@ -427,7 +430,7 @@ sub readconfig {
 			$bankfound = 0;
 		}
 	}
-	close CONF;
+	close $conf;
 }
 
 
@@ -451,13 +454,13 @@ sub read_index {
 		die "FATAL: can't find \$tree (required) in \"$dir/summary\"\n";
 	}
 	# read in the index
-	open IDX, '-|', "$GZIP -d <\"$dir/index.gz\""
+	open my $idx, '-|', "$GZIP -d <\"$dir/index.gz\""
 		or die "FATAL: can't process \"$GZIP -d <\"$dir/index.gz\"\": $!\n";
 	my $count = 0;
-	while ( defined ( my $line = <IDX> ) ) {
+	while ( defined ( my $line = <$idx> ) ) {
 		chomp $line;
-		if ( $line =~ /^\s*(\d+)\s+\d+\s+[\-][rwxsStT\-]+\s+\d+\s+([^\s]+)\s+([^\s]+)\s+(\d+)\s+(\w+\s+\d+\s+[\d:]+)\s+([^\s].+)$/ ) {
-			my ( $inode, $user, $group, $size, $date, $file ) = ( $1, $2, $3, $4, $5, $6 );
+		if ( $line =~ /^\s*(\d+)\s+\d+\s+(-[rwxsStT\-]+)\s+\d+\s+([^\s]+)\s+([^\s]+)\s+(\d+)\s+(\w+\s+\d+\s+[\d:]+)\s+([^\s].+)$/ ) {
+			my ( $inode, $permissions, $user, $group, $size, $date, $file ) = ( $1, $2, $3, $4, $5, $6, $7 );
 			$date =~ s/  +/ /g;
 			if ( substr ( $file, 0, length $tree ) eq $tree ) {
 				$file = substr $file, length $tree;
@@ -472,6 +475,7 @@ sub read_index {
 			$file =~ s/\\(\d{3})/pack('C',oct($1))/eg;
 			# store vital statistics
 			$$filestats{$file} = {
+				permissions => $permissions,
 				user => $user,
 				group => $group,
 				size => $size,
@@ -502,7 +506,7 @@ sub read_index {
 			}
 		}
 	}
-	close IDX;
+	close $idx;
 	if ( $count < 0 ) {
 		# we can't use existing inode list and have to read them all again (-1 indicates a problem / mismatch)
 		# re-read in index stating all files
