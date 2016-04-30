@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-# version:  20150103
+# version:  20150104
 # finds files in directory and MD5sums and SHA1sums them, being smart enough to
 # check against previous backup for hard links
 #
@@ -245,15 +245,6 @@ sub process_dir {
 			# we assume lines are either files or deletes
 			if ( -e "$dir/tree/$line" ) {
 				# good one - add to the changed list
-# TODO but this will also impact other files hard linked to this one TODO
-#				$changedfiles{"./$line"} = 1;
-#if ( $line =~ /etc\/apache2\/(blocklist|local-addresses)\.conf/ ) {
-#print "change: ./$line\n";
-#print "\t".$filestatsnew{"./$line"}."\n";
-#foreach (@{$filesbyinodenew{$filestatsnew{"./$line"}}}) {
-#print "\t\t$_\n";
-#}
-#}
 				# if hard linked multiple files could change
 				# both new and old inodes since we may be using ptrfs snapshots where the same inodes will get reused
 				# so mark both as changed
@@ -289,29 +280,8 @@ sub process_dir {
 					my $inode;
 					my ( $checksum, $path ) = ( $1, $2 );
 					$path =~ s/^\//.\//;
-					# use cached inodes if available
-# TODO clear this all up
-					if ( exists $filestatsprev{$path}->{inode} ) {
-						$inode = $filestatsprev{$path}->{inode};
-#if ( $path =~ /usr\/lib\/php\/blog-dev\/\.hg\/store\/.*phaseroots/ ) {
-#print "$path :: fromChecksum : $inode\n";
-#print "\t".join("\n\t",@{$filesbyinodeprev{$inode}})."\n\n";
-#print "\t".join("\n\t",@{$filesbyinodenew{$inode}})."\n\n";
-#}
-					} else {
-# TODO this should not occur - we should have got them either way by now TODO
-die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
-#						$inode = (stat "$previousdir/tree/$path")[1];
-#						# cache inodes by file to save time later
-#						$filestatsprev{$path} = $inode;
-					}
-					if ( ! $inode ) {
-						print STDERR "\tWARNING: no inode for \"$previousdir/tree/$path\"\n";
-						next;
-					}
-					$checksums{$inode} = $checksum;
-#if ( $line =~ /etc\/apache2\/blocklist\.conf/ ) { print "cache: $line\n\t$previousdir :: $inode :: $checksum\n"; }
-#if ( $inode == 2044 ) { print "icache: $line\n\t$previousdir :: $checksum\n"; }
+					# use cached inodes as index
+					$checksums{$filestatsprev{$path}->{inode}} = $checksum;
 				}
 			}
 			close CHECKSUM;
@@ -330,17 +300,8 @@ die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
 		foreach my $line (sort keys %filestatsnew) {
 			++$filecount;
 			my $inode;
-# TODO clear this all up
-			if ( exists $filestatsnew{$line} ) {
-				$inode = $filestatsnew{$line}->{inode};
-			} else {
-# TODO this should not occur - we should have got them either way by now TODO
-die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
-#				my @stat = stat ( $line );
-#				$inode = $stat[1];
-#				$filestatsnew{$line} = $inode;
-			}
-			if ( $checksums{$inode} and ! $changedfiles{$line}
+			$inode = $filestatsnew{$line}->{inode};
+			if ( exists ( $checksums{$inode} ) and ! exists ( $changedfiles{$line} ) and exists ( $filestatsprev{$line} )
 					and $filestatsnew{$line}->{inode} == $filestatsprev{$line}->{inode}
 					and $filestatsnew{$line}->{user} eq $filestatsprev{$line}->{user}
 					and $filestatsnew{$line}->{permissions} eq $filestatsprev{$line}->{permissions}
@@ -349,18 +310,10 @@ die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
 					and $filestatsnew{$line}->{date} eq $filestatsprev{$line}->{date}
 					and ( ! exists $filestatsnew{$line}->{mtime} or ! exists $filestatsprev{$line}->{mtime}
 						or $filestatsnew{$line}->{mtime} == $filestatsprev{$line}->{mtime} ) ) {
-#			if ( $checksums{$inode} and ! $changedfiles{$line} ) {	# double check: inode and changed list
-				# use the existing cached data
-#if ( $line =~ /usr\/lib\/php\/blog-dev\/\.hg\/store\/.*phaseroots/ ) {
-#print "$line :: existing : $inode : $checksums{$inode}\n";
-#}
-# TODO maybe we should check size and date for extra safety TODO
 # TODO yes - since inodes mya not change with btrfs snapshots, and generations may be skipped/deleted, logs & inodes don't have the whole story TODO
 				print CHECKSUM "$checksums{$inode}  $line\n";
 				++$fileduplicate;
-#if ( $line =~ /etc\/apache2\/blocklist\.conf/ ) { print "existing: ./$line\n\t$inode :: $checksums{$inode}\n"; }
 			} else {
-#if ( $line =~ /etc\/apache2\/blocklist\.conf/ ) { print "new: ./$line\n"; }
 				# changed - need to checksum file
 				my $sum;
 				if ( $checksumfile eq 'SHA512SUMS' ) {
@@ -383,9 +336,6 @@ die "$0: ".__LINE__." FATAL - this silly situation can't occur\n";
 				} else {
 					print "ERROR:  \"$line\"\n";
 				}
-#if ( $line =~ /usr\/lib\/php\/blog-dev\/\.hg\/store\/.*phaseroots/ ) {
-#print "$line :: new : ......... : $sum\n";
-#}
 			}
 		}
 		close CHECKSUM;
