@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
-#
-# version:  20190127
-# finds files in directory and MD5sums and SHA1sums them, being smart enough to
-# check against previous backup for hard links
-#
-#
-#
-#
-# Copyright (C) 2008-2019  Glen Pitt-Pladdy
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-#
-#
-# See https://www.pitt-pladdy.com/blog/_20120412-224240_0100_dirvish-checksum_available_again/
+"""
+version:  20190331
+finds files in directory and MD5sums and SHA1sums them, being smart enough to
+check against previous backup for hard links
+
+
+
+
+Copyright (C) 2008-2019  Glen Pitt-Pladdy
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+
+See https://www.pitt-pladdy.com/blog/_20120412-224240_0100_dirvish-checksum_available_again/
+"""
 
 
 import re
@@ -41,12 +42,12 @@ import pprint
 
 
 # default config file
-CONFIG = "/etc/dirvish/master.conf";
+CONFIG = "/etc/dirvish/master.conf"
 
 CHECKSUMS = [
-#    'MD5SUMS',
-#    'SHA1SUMS',
-#    'SHA256SUMS',
+    #'MD5SUMS',
+    #'SHA1SUMS',
+    #'SHA256SUMS',
     'SHA512SUMS',
 ]
 
@@ -55,30 +56,9 @@ READSIZE = 65536    # 64KiB
 
 
 
-# read the master config
-banks = {}
-def readconfig(config_file):
-    with open(config_file, 'rt') as f:
-        in_bank = False
-        for line in f:
-            if line.startswith('bank:'):
-                in_bank = True
-                continue
-            # strip comments
-            line = line.split('#', 1)[0].rstrip()
-            if in_bank and re.match(r'^\s', line):
-                banks[line.strip()] = True
-            else:
-                in_bank = False
-if os.path.isfile(CONFIG):
-    readconfig(CONFIG)
-if not bool(banks):
-    raise Exception("No banks found in configs provided")
 
 
-
-
-class Backup(object):
+class Vault(object):
     def __init__(self, vault_path):
         """
         :arg vault_path: str, path to vault
@@ -87,7 +67,7 @@ class Backup(object):
         # look for days in backup
         self.days = []
         for day in os.scandir(self.vault_path):
-            if not backup.is_dir():
+            if not day.is_dir():
                 continue
             if not os.path.isdir(os.path.join(day.path, 'tree')):
                 continue
@@ -110,7 +90,11 @@ class Backup(object):
                 for compress in ['gz', 'bz2', 'xz']:
                     checkfile = os.path.join(day, '{}.{}'.format(check, compress))
                     if os.path.isfile(checkfile):
-                        self._last_day[check] = {'day': day, 'check_file': checkfile, 'compress': compress} # TODO is this used fully?
+                        self._last_day[check] = {   # TODO is this used fully?
+                            'day': day,
+                            'check_file': checkfile,
+                            'compress': compress,
+                        }
                         existing_checksum.append(check)
                         break
             # see what checksum types we are missing
@@ -118,8 +102,8 @@ class Backup(object):
             for check in CHECKSUMS:
                 if check not in existing_checksum:
                     missing_checksum.append(check)
-            if len(missing_checksum) == 0:
-                # got all checksums this day - can't keep previous data as we need to load 
+            if not missing_checksum:
+                # got all checksums this day - can't keep previous data as we need to load
                 self._checksum_cache = {}
                 self._last_stat = {}
                 last_day = day
@@ -166,10 +150,10 @@ class Backup(object):
         if re.search(r'\\\d{3}', path):  # convert octal chars
             parts = [b'', path]
             while re.search(r'\\\d{3}', parts[-1]):  # convert octal chars
-                m = re.search(r'\\(\d{3})', parts[-1])
+                match = re.search(r'\\(\d{3})', parts[-1])
                 parts[-1:] = re.split(r'\\\d{3}', parts[-1], 1)
                 parts[-2] = bytes(parts[-2].encode('utf-8'))
-                parts.insert(-1, struct.pack('B', int(m.group(1), 8)))
+                parts.insert(-1, struct.pack('B', int(match.group(1), 8)))
             parts[-1] = bytes(parts[-1].encode('utf-8'))
             path = b''
             for part in parts:
@@ -232,7 +216,7 @@ class Backup(object):
             inode = self._current_stat[path]['inode']
             if inode in self._checksum_cache[check]:
                 continue
-            with open(os.path.join(day, 'tree', path), 'rb') as f:
+            with open(os.path.join(day, 'tree', path), 'rb') as f_check:
                 if check == 'SHA512SUMS':
                     checksum = hashlib.sha512()
                 elif check == 'SHA256UMS':
@@ -244,9 +228,9 @@ class Backup(object):
                 else:
                     raise ValueError("Unhandled hash: {}".format(check))
                 while True:
-                    data = f.read(READSIZE)
+                    data = f_check.read(READSIZE)
                     read_bytes += len(data)
-                    if len(data) == 0:
+                    if not data:
                         break
                     checksum.update(data)
                 self._checksum_cache[check][inode] = checksum.hexdigest()
@@ -256,11 +240,11 @@ class Backup(object):
         # write temp file
         print("\tWriting {} ....".format(check))
         checkfile = os.path.join(day, check + '.xz')
-        with lzma.open(checkfile + '.TMP', 'wt') as f:
+        with lzma.open(checkfile + '.TMP', 'wt') as f_sums:
             for path in self._current_stat:
                 inode = self._current_stat[path]['inode']
                 escaped_path, escaped_checksum = self._checksum_escape(path, self._checksum_cache[check][inode])
-                print('{}  {}'.format(escaped_checksum, escaped_path), file=f)
+                print('{}  {}'.format(escaped_checksum, escaped_path), file=f_sums)
         # rename temp file
         os.rename(checkfile + '.TMP', checkfile)
 #        # done
@@ -284,8 +268,8 @@ class Backup(object):
             if check not in self._checksum_cache:
                 self._checksum_cache[check] = {}
             compress = {'xz': lzma, 'bz2': bz2, 'gz': gzip}[self._last_day[check]['compress']]
-            with compress.open(self._last_day[check]['check_file'], 'rt') as f:
-                for line in f:
+            with compress.open(self._last_day[check]['check_file'], 'rt') as f_sums:
+                for line in f_sums:
                     checksum, path = line.split('  ', 1)
                     path = path.rstrip('\n')
                     if path.startswith('./'):
@@ -306,8 +290,8 @@ class Backup(object):
         """
         # get top level path to be able to strip this
         tree = None
-        with open(os.path.join(day, 'summary')) as f:
-            for line in f:
+        with open(os.path.join(day, 'summary')) as f_summary:
+            for line in f_summary:
                 if line.startswith('tree:'):
                     tree = line.split(':', 1)[1].strip()
                     break
@@ -315,8 +299,8 @@ class Backup(object):
             raise Exception("Can't find 'tree' in {}".format(os.path.join(day, 'summary')))
         # read index file
         index = {}
-        with gzip.open(os.path.join(day, 'index.gz'), 'rt') as f:
-            for line in f:
+        with gzip.open(os.path.join(day, 'index.gz'), 'rt') as f_index:
+            for line in f_index:
                 line = line.lstrip(' ') # remove leading spaces
                 line = line.rstrip('\n')
 #                print(line)
@@ -375,8 +359,8 @@ class Backup(object):
         deleted = {}
         parse_running = False
         lines_running = []
-        with gzip.open(os.path.join(day, 'log.gz'), 'rt') as f:
-            for line in f:
+        with gzip.open(os.path.join(day, 'log.gz'), 'rt') as f_log:
+            for line in f_log:
                 line = line.rstrip('\n')
                 # we need to find where file start - once rsync starts sending/receiving
                 if not parse_running:
@@ -400,28 +384,42 @@ class Backup(object):
 
 
 
-#def main(argv):
+def main(argv):
+    # read the master config
+    banks = {}
+    def readconfig(config_file):
+        with open(config_file, 'rt') as f_conf:
+            in_bank = False
+            for line in f_conf:
+                if line.startswith('bank:'):
+                    in_bank = True
+                    continue
+                # strip comments
+                line = line.split('#', 1)[0].rstrip()
+                if in_bank and re.match(r'^\s', line):
+                    banks[line.strip()] = True
+                else:
+                    in_bank = False
+    if os.path.isfile(CONFIG):
+        readconfig(CONFIG)
+    if not bool(banks):
+        raise Exception("No banks found in configs provided")
 
-# go through each vault in each bank
-for bank in banks:
-    if not os.path.isdir(bank):
-        print("Skipping bank not available: {}".format(bank))
-        continue
-    # look for backups in this bank
-    for backup in os.scandir(bank):
-        if not backup.is_dir():
+    # go through each vault in each bank
+    for bank in banks:
+        if not os.path.isdir(bank):
+            print("Skipping bank not available: {}".format(bank))
             continue
-        if not os.path.isfile(os.path.join(backup.path, 'dirvish', 'default.conf')):
-            continue
-        # assess the backup
-        backup = Backup(backup.path)
-        backup.process()
+        # look for vaults in this bank
+        for vault in os.scandir(bank):
+            if not vault.is_dir():
+                continue
+            if not os.path.isfile(os.path.join(vault.path, 'dirvish', 'default.conf')):
+                continue
+            # assess the backups in vault
+            Vault(vault.path).process()
 
 
-#if __name__ == '__main__':
-#    main(sys.argv)
-
-
-
-
+if __name__ == '__main__':
+    main(sys.argv)
 
