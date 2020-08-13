@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-version:  20190331
+version:  20200813
 finds files in directory and MD5sums and SHA1sums them, being smart enough to
 check against previous backup for hard links
 
@@ -30,6 +30,7 @@ See https://www.pitt-pladdy.com/blog/_20120412-224240_0100_dirvish-checksum_avai
 
 import re
 import os
+import stat
 import lzma
 import bz2
 import gzip
@@ -52,6 +53,8 @@ CHECKSUMS = [
 ]
 
 READSIZE = 65536    # 64KiB
+INDEX_SANITY_CHECK_PER = 20 # check 1 node in this many
+INDEX_SANITY_CHECK_MIN = 100
 
 
 
@@ -59,9 +62,12 @@ READSIZE = 65536    # 64KiB
 
 
 class Vault(object):
+    skip_checksum_types = ('symlink', 'device')
+
     def __init__(self, vault_path):
         """
-        :arg vault_path: str, path to vault
+        Args:
+            vault_path (str): path to dirvish vault
         """
         self.vault_path = vault_path
         # look for days in backup
@@ -139,37 +145,70 @@ class Vault(object):
 
     # escaping #################################################################
     def _index_unescape(self, path):
+        """unescape entries from dirvish index to native paths
+
+        Args:
+            path (str): dirvish index path of file
+        Returns:
+            str: utf-8 encoded filesystem path
+        """
+        # always turn into bytes for processing
+        path = path.encode('utf-8')
         #$file =~ s/([^\\]) .*+$/$1/;	# clear everything after a real space
-        if re.search(r'([^\\]) ', path):
+        if re.search(b'([^\\\\]) ', path):
             raise Exception("not implemented spaces in: {}".format(path))
-        path = path.replace('\\ ', ' ')     # convert spaces
+        path = path.replace(b'\\ ', b' ')     # convert spaces
 #        path = re.sub(r'\\"', '"', path)    # convert quotes
-        if re.search(r'^\\"', path):
-            raise Exception("not implemented \" in: {}".format(path))
-        path = path.replace('\\n', '\n')    # convert newlines
-        if re.search(r'\\\d{3}', path):  # convert octal chars
-            parts = [b'', path]
-            while re.search(r'\\\d{3}', parts[-1]):  # convert octal chars
-                match = re.search(r'\\(\d{3})', parts[-1])
-                parts[-1:] = re.split(r'\\\d{3}', parts[-1], 1)
-                parts[-2] = bytes(parts[-2].encode('utf-8'))
-                parts.insert(-1, struct.pack('B', int(match.group(1), 8)))
-            parts[-1] = bytes(parts[-1].encode('utf-8'))
-            path = b''
-            for part in parts:
-                path += bytes(part)
-            path = path.decode('utf-8')
-        path = re.sub(r'\\\\', r'\\', path)    # convert backslashes
-#        if '\\' in path:
-#            raise ValueError(path)
+        if re.search(b'^\\\\"', path):
+            raise NotImplementedError("not implemented \" in: {}".format(path))
+        path = path.replace(b'\\n', b'\n')    # convert newlines
+        path = path.replace(b'\\f', b'\f')    # convert form feed
+        escapes = True
+        while escapes:
+            escapes = False
+            # escapes in dirvish index is \ooo where ooo = octal
+            match = re.match(b'^(.*)\\\\([0-7]{3})(.*)$', path)
+            if match:
+                escapes = True
+                path = match.group(1)
+                path += struct.pack('B', int(match.group(2), 8))
+                path += match.group(3)
+        path = path.replace(b'\\\\', b'\\') # convert remaining backslashes
+        path = path.decode('utf-8')
         return path
 
     def _log_unescape(self, path):
-        # TODO
+        """unescape entries from dirvish log (rsync output) to native paths
+
+        Args:
+            path (str): dirvish log / rsync output path of file
+        Returns:
+            str: utf-8 encoded filesystem path
+        """
+        # always turn into bytes for processing
+        path = path.encode('utf-8')
+        escapes = True
+        while escapes:
+            escapes = False
+            # escapes in rsync log is \#ooo where ooo = octal
+            match = re.match(b'^(.*)\\\\#([0-7]{3})(.*)$', path)
+            if match:
+                escapes = True
+                path = match.group(1)
+                path += struct.pack('B', int(match.group(2), 8))
+                path += match.group(3)
+        path = path.decode('utf-8')
         return path
 
     def _checksum_escape(self, path, checksum):
-        """Turn path from disk/native to checksum style
+        """escape entries from native paths to *sum output
+
+        Args:
+            path (str): native filesystem path of file
+            checksum (str): hex checksum data
+        Returns:
+            str: *sum output escaped path of file
+            str: checksum with leading backslash added when escaping is active
         """
         orig_path = path
         path = path.replace('\\', '\\\\')
@@ -177,8 +216,16 @@ class Vault(object):
         if path != orig_path:
             checksum = '\\' + checksum
         return path, checksum
+
     def _checksum_unescape(self, path, checksum):
-        """Turn path from checksum style to disk/native
+        """unescape entries from *sum output to native paths
+
+        Args:
+            path (str): *sum output escaped path of file
+            checksum (str): hex checksum data with leading backslash when escaping is active
+        Returns:
+            str: native filesystem path of file
+            str: checksum with leading backslash rmoved after decoding
         """
         if checksum[0] != '\\':
             # not escaped
@@ -213,6 +260,8 @@ class Vault(object):
         read_bytes = 0
         print("\tGenerating {} ....".format(check))
         for path in self._current_stat:
+            if self._current_stat[path]['type'] in self.skip_checksum_types:
+                continue
             inode = self._current_stat[path]['inode']
             if inode in self._checksum_cache[check]:
                 continue
@@ -242,6 +291,8 @@ class Vault(object):
         checkfile = os.path.join(day, check + '.xz')
         with lzma.open(checkfile + '.TMP', 'wt') as f_sums:
             for path in self._current_stat:
+                if self._current_stat[path]['type'] in self.skip_checksum_types:
+                    continue
                 inode = self._current_stat[path]['inode']
                 escaped_path, escaped_checksum = self._checksum_escape(path, self._checksum_cache[check][inode])
                 print('{}  {}'.format(escaped_checksum, escaped_path), file=f_sums)
@@ -290,7 +341,7 @@ class Vault(object):
         """
         # get top level path to be able to strip this
         tree = None
-        with open(os.path.join(day, 'summary')) as f_summary:
+        with open(os.path.join(day, 'summary'), 'rt') as f_summary:
             for line in f_summary:
                 if line.startswith('tree:'):
                     tree = line.split(':', 1)[1].strip()
@@ -299,51 +350,88 @@ class Vault(object):
             raise Exception("Can't find 'tree' in {}".format(os.path.join(day, 'summary')))
         # read index file
         index = {}
+        sanity_check_per_count = 0
+        sanity_check_total = 0
+        sanity_check_fail = False
         with gzip.open(os.path.join(day, 'index.gz'), 'rt') as f_index:
             for line in f_index:
                 line = line.lstrip(' ') # remove leading spaces
                 line = line.rstrip('\n')
 #                print(line)
                 items = re.split(r' +', line, maxsplit=6)
-                stat = {name: item for item, name in zip(items[:-1], ['inode', '512_blocks', 'mode', 'nlink', 'user', 'group'])}
-                if stat['mode'][0] != '-':
-                    # not a regular file - skip TODO maybe we want to be intelligent about this as an option
-                    continue
-                if stat['mode'][0] in ['c', 'b']:
-                    # device file TODO this doesn't do anything as a resut of ths skip above
+                index_stat = {name: item for item, name in zip(items[:-1], ['inode', '512_blocks', 'mode', 'nlink', 'user', 'group'])}
+                if index_stat['mode'][0] in ('c', 'b'):
+                    # TODO is there something useful we can do with these?
                     items = re.split(r' +', items[-1], maxsplit=5)
                     items[0] = items[0].rstrip(',')
-                    stat.update({name: item for item, name in zip(items, ['dev_major', 'dev_minor', 'month', 'day', 'time', 'path'])})
+                    index_stat.update({name: item for item, name in zip(items, ['dev_major', 'dev_minor', 'month', 'day', 'time', 'path'])})
                     for name in ['dev_major', 'dev_minor']:
-                        stat[name] = int(stat[name])
+                        index_stat[name] = int(index_stat[name])
+                    index_stat['type'] = 'device'
+                elif index_stat['mode'][0] in ('s', 'p', 'd'):
+                    # skip sockets TODO is there something useful we can do with these?
+                    # skip pipes TODO is there something useful we can do with these?
+                    # skip directories TODO is there something useful we can do with these?
+                    # index_stat['type'] = 'socket'
+                    # index_stat['type'] = 'pipe'
+                    # index_stat['type'] = 'directory'
+                    continue
                 else:
                     # regular node
                     items = re.split(r' +', items[-1], maxsplit=4)
-                    stat.update({name: item for item, name in zip(items, ['size', 'month', 'day', 'time', 'path'])})
+                    index_stat.update({name: item for item, name in zip(items, ['size', 'month', 'day', 'time', 'path'])})
                     for name in ['size']:
-                        stat[name] = int(stat[name])
-                if stat['mode'][0] == 'l':
-                    print(line)
-                    # symlink TODO this doesn't do anything as a resut of ths skip above
-                    stat['path'], stat['symlink'] = stat['path'].split(' -> ', 1)
-                    stat['symlink'] = self._index_unescape(stat['symlink'])
-#                if stat['mode'][0] == 's':
-#                    print(line)
-#                    # we don't do sockets TODO shoudl this extend to devices etc.?
-#                    continue
+                        index_stat[name] = int(index_stat[name])
+                    if index_stat['mode'][0] == '-':
+                        index_stat['type'] = 'file'
+                    elif index_stat['mode'][0] == 'l':
+                        index_stat['path'], index_stat['symlink'] = index_stat['path'].split(' -> ', 1)
+                        index_stat['symlink'] = self._index_unescape(index_stat['symlink'])
+                        index_stat['type'] = 'symlink'
+                    else:
+                        raise NotImplementedError("Don't know how to handle mode[0] = {}".format(index_stat['mode'][0]))
                 # convert to useful formats / types
-                stat['path'] = self._index_unescape(stat['path'])
-                stat['date'] = '{} {} {}'.format(stat['month'], stat['day'], stat['time'])
-                del stat['month']
-                del stat['day']
-                del stat['time']
+                index_stat['path'] = self._index_unescape(index_stat['path'])
+                index_stat['date'] = '{} {} {}'.format(index_stat['month'], index_stat['day'], index_stat['time'])
+                del index_stat['month']
+                del index_stat['day']
+                del index_stat['time']
                 for name in ['inode', '512_blocks', 'nlink']:
-                    stat[name] = int(stat[name])
-                if stat['path'] == os.path.join(day, 'tree'):
-                    stat['path'] = '/'
-                elif stat['path'].startswith(tree):
-                    stat['path'] = stat['path'][len(tree):].lstrip('/')
-                index[stat['path']] = stat
+                    index_stat[name] = int(index_stat[name])
+                if index_stat['path'] == os.path.join(day, 'tree'):
+                    index_stat['path'] = '/'
+                elif index_stat['path'].startswith(tree):
+                    index_stat['path'] = index_stat['path'][len(tree):].lstrip('/')
+                index[index_stat['path']] = index_stat
+                # sanity check some
+                sanity_check_per_count = (sanity_check_per_count + 1) % INDEX_SANITY_CHECK_PER
+                if not sanity_check_fail and not sanity_check_per_count:
+                    real_inode = os.lstat(os.path.join(day, 'tree', index_stat['path'])).st_ino
+                    if index_stat['inode'] != real_inode:
+                        print("\t\tsanity check fail: {}".format(index_stat['path']))
+                        sanity_check_fail = True
+                    sanity_check_total += 1
+            # deal with sanity check problems
+            if sanity_check_fail or sanity_check_total < INDEX_SANITY_CHECK_MIN:
+                # need full reindex
+                if sanity_check_fail:
+                    print("\tRequire full reindex (sanity check fail)...")
+                else:
+                    print("\tRequire full reindex (sanity checks {} < min)...".format(sanity_check_total))
+                for path, index_stat in index.items():
+                    backup_path = os.path.join(day, 'tree', path.lstrip(os.sep))
+                    real_stat = os.lstat(backup_path)
+                    # not everything is safe to update - these should be
+                    index_stat['inode'] = real_stat.st_ino  # we expect this to change
+                    # sanity checks
+                    if real_stat.st_size != index_stat.get('size', 0):
+                        raise ValueError("real size != index size: {} != {}".format(real_stat.st_size, index_stat['size']))
+                    if stat.filemode(real_stat.st_mode) != index_stat['mode']:
+                        raise ValueError("real mode != index mode: {} != {}".format(stat.filemode(real_stat.st_mode), index_stat['mode']))
+                    if stat.S_ISLNK(real_stat.st_mode):
+                        if os.readlink(backup_path) != index_stat['symlink']:
+                            raise ValueError("real symlink != index symlink: {} != {}".format(os.readlink(backup_path), index_stat['symlink']))
+
         # TODO sanity check by inode checks on a proportion
         #   TODO get all inodes & mtime if fail
 
